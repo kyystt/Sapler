@@ -1,0 +1,8 @@
+label1:
+    NOP
+
+_label2:
+    NOP
+
+label_oie:
+    NOP

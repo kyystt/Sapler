@@ -1,0 +1,27 @@
+; Pass 1 test. Addresses are decimal; each opcode occupies one byte.
+; Expected labels: START=0, DIRECT=3, INDIRECT=6, WIDE=9,
+; PORTS=12, BRANCH=16, DONE=19, END=20.
+
+ORG 100
+
+START:
+    NOP                 ; 0:  1 byte
+    LDA #5              ; 1:  2 bytes
+
+DIRECT: ADD 100         ; 3:  3 bytes
+INDIRECT: ADD @100      ; 6:  3 bytes
+
+WIDE:
+    LDS #1000           ; 9:  3 bytes
+
+PORTS: IN 10            ; 12: 2 bytes
+    OUT 20              ; 14: 2 bytes
+
+BRANCH: JMP DONE        ; 16: 3 bytes; forward reference
+
+ORG 100h
+DONE: HLT               ; 19: 1 byte
+END:                    ; 20: label only, no bytes
+
+START: NOP
+START: HLT       ; should report duplicate label

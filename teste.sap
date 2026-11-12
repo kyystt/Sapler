@@ -1,0 +1,15 @@
+ORG 100
+X: db 1
+Y: db 2 ; ISSO EH UM COMENTARIO
+Z: ds 1
+
+ORG 0
+lda X
+add Y
+STA Z
+
+ADD #500
+STA @1000h
+LDS #100
+
+HLT
