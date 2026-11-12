@@ -97,9 +97,16 @@ typedef enum {
     MODE_IMM16 = 1u << 3
 } AddressingFlags;
 
+typedef enum {
+    DIRECT = 0,
+    INDIRECT,
+    IMM_8,
+    IMM_16,
+} MODE_OFFSET;
+
 typedef struct {
     const char *mnemonic;
-    uint8_t opcode;
+    uint8_t base_opcode;
     uint8_t supported_modes;
 } Instruction;
 
