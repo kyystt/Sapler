@@ -341,6 +341,29 @@ int main(int argc, char **argv)
         free(tag);
     }
 
+    // pass 2
+    rewind(fp);
+    LOCCNTR = 0;
+    line_num = 0;
+    while(fgets(line, sizeof(line), fp)) {
+        line_num++;
+        printf("processing line %zu: %s", line_num, line);
+
+        char *cursor = line;
+        remove_comment(cursor);
+        trim(cursor);
+        if (*cursor == '\0') continue;
+
+        char *cl = strchr(cursor, ':');
+
+        if (cl != NULL) {
+            cursor = cl + 1;
+            trim_left(&cursor);
+        }
+
+        if (*cursor == '\0') continue; // label only line
+    }
+
     for (size_t i = 0; i < ls.count; ++i)
         printf("%s @ %d\n", ls.arr[i].name, ls.arr[i].addr);
 
