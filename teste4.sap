@@ -1,0 +1,9 @@
+; DS 100
+
+; DB 1, 2, 3
+
+; DW 1, 2, 3
+
+STR "oie"
+
+; label1: NOP

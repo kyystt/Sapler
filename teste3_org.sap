@@ -1,3 +1,5 @@
+ORG 100
+
 label1:
     NOP
 
@@ -6,3 +8,5 @@ _label2:
 
 label_oie:
     NOP
+
+label: NOP
