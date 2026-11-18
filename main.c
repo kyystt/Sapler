@@ -29,9 +29,9 @@ typedef struct {
 } Labels;
 
 #ifdef _WIN32
-    #define strcasecmp _stricmp
+#define strcasecmp _stricmp
 #else
-    #include <strings.h>
+#include <strings.h>
 #endif
 
 int array_contains_str(Labels *ls, const char *name) {
@@ -39,6 +39,19 @@ int array_contains_str(Labels *ls, const char *name) {
         if (!strcasecmp(ls->arr[i].name, name)) return 1;
     }
     return 0;
+}
+
+static inline void remove_doubleq(char *str)
+{
+    size_t len = strlen(str);
+    if (len >= 2 && *str == '"' && str[len - 1] == '"') {
+        memmove(str, str+1, len - 2);
+        str[len - 2] = '\0';
+        return;
+    }
+
+    fprintf(stderr, "not a double quoted string");
+    exit(EXIT_FAILURE);
 }
 
 static inline void remove_comment(char *str)
@@ -76,21 +89,24 @@ char* get_str_until(const char *str, int delim, size_t *out_size)
     const char *p = strchr(str, delim);
 
     if (!p) {
-        *out_size = 0;
+        if (out_size != NULL)
+            *out_size = 0;
         return NULL;
     }
 
-    *out_size = (size_t)(p - str);
+    size_t size = (size_t) (p - str);
 
-    char *segment = malloc(*out_size + 1);
+    char *segment = malloc(size + 1);
 
     if (!segment) {
         perror("malloc");
         exit(EXIT_FAILURE);
     }
 
-    strncpy(segment, str, *out_size);
-    segment[*out_size] = '\0';
+    strncpy(segment, str, size);
+    segment[size] = '\0';
+
+    if (out_size != NULL) *out_size = size;
 
     return segment;
 }
@@ -102,21 +118,24 @@ char* get_str_until_func(const char *str, int (*comp)(int), size_t *out_size)
     while (*p && !comp(*p)) ++p;
 
     if (!p) {
-        *out_size = 0;
+        if (out_size != NULL)
+            *out_size = 0;
         return NULL;
     }
 
-    *out_size = (size_t)(p - str);
+    size_t size = (size_t)(p - str);
 
-    char *segment = malloc(*out_size + 1);
+    char *segment = malloc(size + 1);
 
     if (!segment) {
         perror("malloc");
         exit(EXIT_FAILURE);
     }
 
-    strncpy(segment, str, *out_size);
-    segment[*out_size] = '\0';
+    strncpy(segment, str, size);
+    segment[size] = '\0';
+
+    if (out_size != NULL) *out_size = size;
 
     return segment;
 }
@@ -219,8 +238,8 @@ int main(int argc, char **argv)
     char line[100];
 
     // first pass -- goal: find labels
-    Labels ls = {0};
-    uint32_t LOCCNTR = 0;
+    Labels SYMTAB = {0};
+    uint32_t LOCCTR = 0;
     size_t line_num = 0;
     while(fgets(line, sizeof(line), fp)) {
         line_num++;
@@ -241,12 +260,12 @@ int main(int argc, char **argv)
                 FAILURE(line_num, line, "label must have a identifier");
             }
 
-            if (LOCCNTR > UINT16_MAX) {
+            if (LOCCTR > UINT16_MAX) {
                 free(name);
                 FAILURE(line_num, line, "label exceeds address space");
             }
 
-            if (array_contains_str(&ls, name)) {
+            if (array_contains_str(&SYMTAB, name)) {
                 free(name);
                 FAILURE(line_num, line, "duplicate label");
             }
@@ -256,8 +275,8 @@ int main(int argc, char **argv)
                 FAILURE(line_num, line, "invalid label name");
             }
 
-            Label label = {.name = name, .addr = LOCCNTR};
-            da_append(ls, label);
+            Label label = {.name = name, .addr = LOCCTR};
+            da_append(SYMTAB, label);
 
             cursor += name_len + 1;
             trim_left(&cursor);
@@ -274,7 +293,7 @@ int main(int argc, char **argv)
 
         printf("tag: %s | cursor: %s | mode: %s\n", tag, cursor, get_addr_mode_name(mode));
 
-        if (!strcmp(tag, "ORG")) {
+        if (!strcasecmp(tag, "ORG")) {
             size_t operand_size;
             char *operand = get_next_field(cursor, &operand_size);
 
@@ -299,9 +318,94 @@ int main(int argc, char **argv)
                     break;
             }
 
-            LOCCNTR = val;
+            LOCCTR = val;
             free(operand);
             free(tag);
+            continue;
+        }
+
+        if (!strcasecmp(tag, "DS")) { // define storage
+            size_t imed_size;
+            char *imed = get_next_field(cursor, &imed_size);
+
+            long imed_val;
+            switch(parse_number(imed, imed_size, &imed_val)) {
+                case ERRVAL:
+                    FAILURE(line_num, line, "invalid value");
+                case ERRBASE:
+                    FAILURE(line_num, line, "invalid base");
+                case OK:
+                default:
+                    break;
+            }
+
+            if (LOCCTR + imed_val > UINT16_MAX + 1) {
+                FAILURE(line_num, line, "directive exceeds address space");
+            }
+
+            LOCCTR += imed_val;
+            continue;
+        } else if (!strcasecmp(tag, "DB")) { // define byte
+            size_t count = 0;
+            char *next = NULL;
+            size_t next_size;
+
+            for(;;) {
+                next = get_next_field(cursor, &next_size);
+                printf("next: %p\n", next);
+
+                if (!next || next_size == 0) break;
+                cursor += next_size;
+                trim_left(&cursor);
+
+                free(next);
+                ++count;
+            }
+
+            if (LOCCTR + count > UINT16_MAX + 1) {
+                FAILURE(line_num, line, "directive exceeds address space");
+            }
+
+            LOCCTR += count;
+            continue;
+        } else if (!strcasecmp(tag, "DW")) { // define word
+            size_t count = 0;
+            char *next = NULL;
+            size_t next_size;
+
+            for(;;) {
+                next = get_next_field(cursor, &next_size);
+                printf("next: %p\n", next);
+
+                if (!next || next_size == 0) break;
+                cursor += next_size;
+                trim_left(&cursor);
+
+                free(next);
+                ++count;
+            }
+
+            if (LOCCTR + 2*count > UINT16_MAX + 1) {
+                FAILURE(line_num, line, "directive exceeds address space");
+            }
+
+            LOCCTR += 2*count;
+            continue;
+        } else if (!strcasecmp(tag, "STR")) { // define string
+            size_t str_len;
+            char *str = get_next_field(cursor, &str_len);
+            remove_doubleq(str);
+            str_len = strlen(str);
+
+            printf("string defined: %s | len: %zu\n", str, str_len);
+
+            free(str);
+
+            if (LOCCTR + str_len > UINT16_MAX + 1) {
+                FAILURE(line_num, line, "directive exceeds address space");
+            }
+
+            LOCCTR += str_len;
             continue;
         }
 
@@ -321,11 +425,11 @@ int main(int argc, char **argv)
                 if (is_valid) {
                     size_t instr_size = get_instr_size(&n, mode);
 
-                    if (LOCCNTR + instr_size > UINT16_MAX + 1) {
+                    if (LOCCTR + instr_size > UINT16_MAX + 1) {
                         FAILURE(line_num, line, "instruction exceeds address space");
                     }
 
-                    LOCCNTR += instr_size;
+                    LOCCTR += instr_size;
                 } else {
                     FAILURE(line_num, line, "Incorrect addressing mode");
                 }
@@ -341,9 +445,13 @@ int main(int argc, char **argv)
         free(tag);
     }
 
+    for (size_t i = 0; i < SYMTAB.count; ++i)
+        printf("%s @ %d\n", SYMTAB.arr[i].name, SYMTAB.arr[i].addr);
+
     // pass 2
+    puts("starting pass 2 phase");
     rewind(fp);
-    LOCCNTR = 0;
+    LOCCTR = 0;
     line_num = 0;
     while(fgets(line, sizeof(line), fp)) {
         line_num++;
@@ -362,15 +470,22 @@ int main(int argc, char **argv)
         }
 
         if (*cursor == '\0') continue; // label only line
+
+        // read next token (mnemonic or directive)
+        size_t tag_size;
+        char *tag = get_str_until_func(cursor, isspace, &tag_size);
+        cursor += tag_size;
+        trim_left(&cursor);
+
+        AddressingFlags mode = check_instr_addr_mode(cursor, tag);
+
+        printf("instruction: %s \n", tag);
     }
 
-    for (size_t i = 0; i < ls.count; ++i)
-        printf("%s @ %d\n", ls.arr[i].name, ls.arr[i].addr);
+    for (size_t i = 0; i < SYMTAB.count; ++i)
+        free(SYMTAB.arr[i].name);
 
-    for (size_t i = 0; i < ls.count; ++i)
-        free(ls.arr[i].name);
-
-    free(ls.arr);
+    free(SYMTAB.arr);
     fclose(fp);
     return 0;
 }
