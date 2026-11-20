@@ -161,19 +161,4 @@ const Instruction SAPIENS_INSTRUCTIONS[] = {
 const size_t SAPIENS_INSTRUCTION_COUNT =
     sizeof(SAPIENS_INSTRUCTIONS) / sizeof(SAPIENS_INSTRUCTIONS[0]);
 
-#ifdef _ISA_IMPLEMENTATION
-
-size_t get_instr_size(const Instruction *i, AddressingFlags mode)
-{
-    if (i->supported_modes == 0) return 1;
-
-    if (i->base_opcode == OP_IN || i->base_opcode == OP_OUT) return 2;
-
-    if (mode == MODE_IMM) return 2;
-    if (mode == MODE_IMM16) return 3;
-
-    return 3;
-}
-
-#endif // _ISA_IMPLEMENTATION
 #endif // _ISA_H_
