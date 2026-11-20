@@ -1,43 +1,37 @@
 #include <ctype.h>
 #include <errno.h>
-#include <limits.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <string.h>
 
-#include "dynamic.h"
-
-#define _ISA_IMPLEMENTATION
+#include "include/dynamic.h"
 #include "include/isa.h"
+#include "include/portio.h"
+#include "include/sv.h"
 
-#define FAILURE(line_num, line, str) \
-    do { \
-        fprintf(stderr, "line %zu: "str" -> %s\n", line_num, line); \
-        exit(EXIT_FAILURE); \
+#define FAILURE(line_num, line, str)                                           \
+    do {                                                                       \
+        fprintf(stderr, "line %zu: " str " -> " SV_FMT "\n", line_num,         \
+                SV_ARGS(line));                                                \
+        exit(EXIT_FAILURE);                                                    \
     } while (0)
 
 typedef struct {
-    char *name;
+    StringView name;
     uint16_t addr;
-} Label;
+} Symbol;
 
 typedef struct {
-    Label *arr;
+    Symbol *items;
     size_t count;
     size_t capacity;
-} Labels;
+} SymbolTable;
 
-#ifdef _WIN32
-#define strcasecmp _stricmp
-#else
-#include <strings.h>
-#endif
-
-int array_contains_str(Labels *ls, const char *name) {
-    for(size_t i = 0; i < ls->count; ++i) {
-        if (!strcasecmp(ls->arr[i].name, name)) return 1;
+int symbol_contains(const SymbolTable *symtab, const StringView name)
+{
+    for (size_t i = 0; i < symtab->count; ++i) {
+        if (sv_eq_ignore_case(symtab->items[i].name, name)) {
+            return 1;
+        }
     }
+
     return 0;
 }
 
@@ -45,7 +39,7 @@ static inline void remove_doubleq(char *str)
 {
     size_t len = strlen(str);
     if (len >= 2 && *str == '"' && str[len - 1] == '"') {
-        memmove(str, str+1, len - 2);
+        memmove(str, str + 1, len - 2);
         str[len - 2] = '\0';
         return;
     }
@@ -61,14 +55,16 @@ static inline void remove_comment(char *str)
 
 static void trim_left(char **str)
 {
-    while(isspace(**str)) (*str)++;
+    while (isspace(**str))
+        (*str)++;
 }
 
 static void trim_right(char **str)
 {
     size_t len = strlen(*str);
 
-    while (len > 0 && isspace((*str)[len - 1])) (*str)[--len] = '\0';
+    while (len > 0 && isspace((*str)[len - 1]))
+        (*str)[--len] = '\0';
 }
 
 static void _trim(char **str)
@@ -84,38 +80,9 @@ static inline void print_usage()
     fprintf(stderr, "usage: ./sapler [file]\n");
 }
 
-char* get_str_until(const char *str, int delim, size_t *out_size)
+char *get_str_until(const char *str, int delim, size_t *out_size)
 {
     const char *p = strchr(str, delim);
-
-    if (!p) {
-        if (out_size != NULL)
-            *out_size = 0;
-        return NULL;
-    }
-
-    size_t size = (size_t) (p - str);
-
-    char *segment = malloc(size + 1);
-
-    if (!segment) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
-    }
-
-    strncpy(segment, str, size);
-    segment[size] = '\0';
-
-    if (out_size != NULL) *out_size = size;
-
-    return segment;
-}
-
-char* get_str_until_func(const char *str, int (*comp)(int), size_t *out_size)
-{
-    const char *p = str;
-
-    while (*p && !comp(*p)) ++p;
 
     if (!p) {
         if (out_size != NULL)
@@ -135,7 +102,39 @@ char* get_str_until_func(const char *str, int (*comp)(int), size_t *out_size)
     strncpy(segment, str, size);
     segment[size] = '\0';
 
-    if (out_size != NULL) *out_size = size;
+    if (out_size != NULL)
+        *out_size = size;
+
+    return segment;
+}
+
+char *get_str_until_func(const char *str, int (*comp)(int), size_t *out_size)
+{
+    const char *p = str;
+
+    while (*p && !comp(*p))
+        ++p;
+
+    if (!p) {
+        if (out_size != NULL)
+            *out_size = 0;
+        return NULL;
+    }
+
+    size_t size = (size_t)(p - str);
+
+    char *segment = malloc(size + 1);
+
+    if (!segment) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    strncpy(segment, str, size);
+    segment[size] = '\0';
+
+    if (out_size != NULL)
+        *out_size = size;
 
     return segment;
 }
@@ -144,74 +143,82 @@ char* get_str_until_func(const char *str, int (*comp)(int), size_t *out_size)
 
 AddressingFlags check_instr_addr_mode(const char *cursor, const char *mnemonic)
 {
-    switch(*cursor) {
-        case '\0':
-            return 0;
-            break;
-        case '@':
-            return MODE_IDIR;
-            break;
-        case '#':
-            if(!strcmp(mnemonic, "LDS")) return MODE_IMM16;
-            else return MODE_IMM;
-            break;
-        default:
-            return MODE_DIR;
-            break;
+    switch (*cursor) {
+    case '\0':
+        return 0;
+        break;
+    case '@':
+        return MODE_IDIR;
+        break;
+    case '#':
+        if (!strcmp(mnemonic, "LDS"))
+            return MODE_IMM16;
+        else
+            return MODE_IMM;
+        break;
+    default:
+        return MODE_DIR;
+        break;
     }
 }
 
-static const char* get_addr_mode_name(AddressingFlags addr)
+static const char *get_addr_mode_name(AddressingFlags addr)
 {
-    switch(addr) {
-        case MODE_IDIR: return "Indirect";
-        case MODE_DIR: return "Direct";
-        case MODE_IMM: return "Immediate";
-        case MODE_IMM16: return "Immediate 16 bits";
-        default: return "No operands";
+    switch (addr) {
+    case MODE_IDIR:
+        return "Indirect";
+    case MODE_DIR:
+        return "Direct";
+    case MODE_IMM:
+        return "Immediate";
+    case MODE_IMM16:
+        return "Immediate 16 bits";
+    default:
+        return "No operands";
     }
 }
 
-typedef enum {
-    OK = 0,
-    ERRBASE,
-    ERRVAL
-} parse_err;
+typedef enum { OK = 0, ERRBASE, ERRVAL } parse_err;
 
 parse_err parse_number(char *operand, size_t operand_size, long *val)
 {
-    char l = operand[operand_size-1];
+    char l = operand[operand_size - 1];
 
     int base;
     if (isdigit(l)) {
         base = 10;
     } else {
-        if(l == 'b') {
+        if (l == 'b') {
             base = 2;
         } else if (l == 'h') {
             base = 16;
         } else {
             return ERRBASE;
         }
-        operand[operand_size-1] = '\0';
+        operand[operand_size - 1] = '\0';
     }
 
     char *end;
     errno = 0;
     *val = strtol(operand, &end, base);
 
-    if (end == operand || *end != '\0' || errno == ERANGE || *val < 0 || *val > UINT16_MAX)
+    if (end == operand || *end != '\0' || errno == ERANGE || *val < 0 ||
+        *val > UINT16_MAX)
         return ERRVAL;
 
     return OK;
 }
 
-int is_valid_label(const char *label)
+int is_valid(StringView symbol)
 {
-    if (isdigit(*label)) return 0;
+    if (isdigit(symbol.data[0]))
+        return 0;
 
-    for(; *label; ++label) {
-        if(!isalnum(*label) && *label != '_') return 0;
+    for (size_t i = 1; i < symbol.count; ++i) {
+        char c = symbol.data[i];
+
+        if (!isalnum(c) && c != '_')
+            return 0;
     }
 
     return 1;
@@ -235,65 +242,57 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
-    char line[100];
+    size_t file_size;
+    char *file_buffer = read_entire_file(path, &file_size);
+
+    StringView file = sv(file_buffer);
 
     // first pass -- goal: find labels
-    Labels SYMTAB = {0};
+    SymbolTable SYMTAB = {0};
     uint32_t LOCCTR = 0;
     size_t line_num = 0;
-    while(fgets(line, sizeof(line), fp)) {
+    while (file.count > 0) {
         line_num++;
-        printf("processing line %zu: %s", line_num, line);
+        StringView line = sv_chop_by_delim(&file, '\n');
+        sv_remove_comment(&line);
+        sv_trim_left(&line);
 
-        char *cursor = line;
+        printf("processing line %zu: " SV_FMT, line_num, SV_ARGS(line));
+        if (line.count == 0)
+            continue;
 
-        remove_comment(cursor);
-        trim(cursor);
-        if (*cursor == '\0') continue;
+        StringView symbol = sv_chop_by_delim(&line, ';');
 
-        size_t name_len;
-        char *name = get_str_until(cursor, ':', &name_len);
-
-        if (name != NULL) {
-            if (name_len == 0) {
-                free(name);
-                FAILURE(line_num, line, "label must have a identifier");
-            }
-
-            if (LOCCTR > UINT16_MAX) {
-                free(name);
-                FAILURE(line_num, line, "label exceeds address space");
-            }
-
-            if (array_contains_str(&SYMTAB, name)) {
-                free(name);
-                FAILURE(line_num, line, "duplicate label");
-            }
-
-            if (!is_valid_label(name)) {
-                free(name);
-                FAILURE(line_num, line, "invalid label name");
-            }
-
-            Label label = {.name = name, .addr = LOCCTR};
-            da_append(SYMTAB, label);
-
-            cursor += name_len + 1;
-            trim_left(&cursor);
+        if (symbol.count == 0) {
+            FAILURE(line_num, line, "label must have a identifier");
         }
-        if (*cursor == '\0') continue;
+
+        if (LOCCTR > UINT16_MAX) {
+            FAILURE(line_num, line, "label exceeds address space");
+        }
+
+        if (symbol_contains(&SYMTAB, symbol)) {
+            FAILURE(line_num, line, "duplicate label");
+        }
+
+        if (is_valid(symbol)) {
+            FAILURE(line_num, line, "invalid label name");
+        }
+
+        Symbol label = {.name = symbol, .addr = LOCCTR};
+        da_append(SYMTAB, label);
+
+        sv_trim_left(&line);
+        if (line.count == 0)
+            continue;
 
         // read next token (mnemonic or directive)
-        size_t tag_size;
-        char *tag = get_str_until_func(cursor, isspace, &tag_size);
-        cursor += tag_size;
-        trim_left(&cursor);
+        StringView tag = sv_chop_by_type(&line, isspace);
+        sv_trim_left(&line);
 
         AddressingFlags mode = check_instr_addr_mode(cursor, tag);
 
-        printf("tag: %s | cursor: %s | mode: %s\n", tag, cursor, get_addr_mode_name(mode));
-
-        if (!strcasecmp(tag, "ORG")) {
+        if (sv_eq_cstr_ignore_case(tag, "ORG")) {
             size_t operand_size;
             char *operand = get_next_field(cursor, &operand_size);
 
@@ -308,14 +307,14 @@ int main(int argc, char **argv)
 
             long val;
 
-            switch(parse_number(operand, operand_size, &val)) {
-                case ERRVAL:
-                    FAILURE(line_num, line, "invalid value");
-                case ERRBASE:
-                    FAILURE(line_num, line, "invalid base");
-                case OK:
-                default:
-                    break;
+            switch (parse_number(operand, operand_size, &val)) {
+            case ERRVAL:
+                FAILURE(line_num, line, "invalid value");
+            case ERRBASE:
+                FAILURE(line_num, line, "invalid base");
+            case OK:
+            default:
+                break;
             }
 
             LOCCTR = val;
@@ -328,15 +327,18 @@ int main(int argc, char **argv)
             size_t imed_size;
             char *imed = get_next_field(cursor, &imed_size);
 
+            if (imed == NULL || imed_size == 0)
+                FAILURE(line_num, line, "expected value");
+
             long imed_val;
-            switch(parse_number(imed, imed_size, &imed_val)) {
-                case ERRVAL:
-                    FAILURE(line_num, line, "invalid value");
-                case ERRBASE:
-                    FAILURE(line_num, line, "invalid base");
-                case OK:
-                default:
-                    break;
+            switch (parse_number(imed, imed_size, &imed_val)) {
+            case ERRVAL:
+                FAILURE(line_num, line, "invalid value");
+            case ERRBASE:
+                FAILURE(line_num, line, "invalid base");
+            case OK:
+            default:
+                break;
             }
 
             if (LOCCTR + imed_val > UINT16_MAX + 1) {
@@ -350,11 +352,13 @@ int main(int argc, char **argv)
             char *next = NULL;
             size_t next_size;
 
-            for(;;) {
+            for (;;) {
                 next = get_next_field(cursor, &next_size);
-                printf("next: %p\n", next);
+                if (next == NULL || next_size == 0)
+                    FAILURE(line_num, line, "expected value, but got none");
 
-                if (!next || next_size == 0) break;
+                if (!next || next_size == 0)
+                    break;
                 cursor += next_size;
                 trim_left(&cursor);
 
@@ -373,11 +377,12 @@ int main(int argc, char **argv)
             char *next = NULL;
             size_t next_size;
 
-            for(;;) {
+            for (;;) {
                 next = get_next_field(cursor, &next_size);
                 printf("next: %p\n", next);
 
-                if (!next || next_size == 0) break;
+                if (!next || next_size == 0)
+                    break;
                 cursor += next_size;
                 trim_left(&cursor);
 
@@ -385,11 +390,11 @@ int main(int argc, char **argv)
                 ++count;
             }
 
-            if (LOCCTR + 2*count > UINT16_MAX + 1) {
+            if (LOCCTR + 2 * count > UINT16_MAX + 1) {
                 FAILURE(line_num, line, "directive exceeds address space");
             }
 
-            LOCCTR += 2*count;
+            LOCCTR += 2 * count;
             continue;
         } else if (!strcasecmp(tag, "STR")) { // define string
             size_t str_len;
@@ -410,7 +415,7 @@ int main(int argc, char **argv)
         }
 
         size_t i;
-        for(i = 0; i < SAPIENS_INSTRUCTION_COUNT; ++i) {
+        for (i = 0; i < SAPIENS_INSTRUCTION_COUNT; ++i) {
             const Instruction n = SAPIENS_INSTRUCTIONS[i];
 
             if (!strcmp(tag, n.mnemonic)) {
@@ -426,7 +431,8 @@ int main(int argc, char **argv)
                     size_t instr_size = get_instr_size(&n, mode);
 
                     if (LOCCTR + instr_size > UINT16_MAX + 1) {
-                        FAILURE(line_num, line, "instruction exceeds address space");
+                        FAILURE(line_num, line,
+                                "instruction exceeds address space");
                     }
 
                     LOCCTR += instr_size;
@@ -453,14 +459,15 @@ int main(int argc, char **argv)
     rewind(fp);
     LOCCTR = 0;
     line_num = 0;
-    while(fgets(line, sizeof(line), fp)) {
+    while (fgets(line, sizeof(line), fp)) {
         line_num++;
         printf("processing line %zu: %s", line_num, line);
 
         char *cursor = line;
         remove_comment(cursor);
         trim(cursor);
-        if (*cursor == '\0') continue;
+        if (*cursor == '\0')
+            continue;
 
         char *cl = strchr(cursor, ':');
 
@@ -469,7 +476,8 @@ int main(int argc, char **argv)
             trim_left(&cursor);
         }
 
-        if (*cursor == '\0') continue; // label only line
+        if (*cursor == '\0')
+            continue; // label only line
 
         // read next token (mnemonic or directive)
         size_t tag_size;
