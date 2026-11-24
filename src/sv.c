@@ -1,8 +1,18 @@
 #include "../include/sv.h"
+#include <string.h>
 
 StringView sv(const char *cstr)
 {
     return (StringView){.data = cstr, .count = strlen(cstr)};
+}
+
+char *sv_to_cstr(StringView *sv)
+{
+    char *res = (char *)malloc(sv->count + 1);
+    memcpy(res, sv->data, sv->count);
+    res[sv->count] = '\0';
+
+    return res;
 }
 
 int sv_eq(StringView a, StringView b)
@@ -131,7 +141,17 @@ void sv_remove_comment(StringView *sv)
         if (c == '"') {
             in_quote = !in_quote;
         } else if (c == ';' && !in_quote) {
-            sv_chop_right(sv, i);
+            sv_chop_right(sv, sv->count - i);
+            return;
         }
     }
+}
+
+void sv_remove_doubleq(StringView *sv)
+{
+    if (sv->data[0] != '"' || sv->data[sv->count - 1] != '"')
+        return;
+
+    sv_chop_left(sv, 1);
+    sv_chop_right(sv, 1);
 }

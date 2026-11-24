@@ -16,6 +16,7 @@ typedef struct {
 } StringView;
 
 StringView sv(const char *);
+char *sv_to_cstr(StringView *);
 int sv_eq(StringView, StringView);
 int sv_eq_ignore_case(StringView, StringView);
 int sv_eq_cstr(StringView, const char *);
@@ -28,5 +29,6 @@ void sv_trim(StringView *);
 StringView sv_chop_by_delim(StringView *, char);
 StringView sv_chop_by_type(StringView *, int (*)(int));
 void sv_remove_comment(StringView *);
+void sv_remove_doubleq(StringView *);
 
 #endif // SV_H

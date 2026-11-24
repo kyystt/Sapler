@@ -1,10 +1,10 @@
 #include <ctype.h>
 #include <errno.h>
 
-#include "include/dynamic.h"
-#include "include/isa.h"
-#include "include/portio.h"
-#include "include/sv.h"
+#include "dynamic.h"
+#include "isa.h"
+#include "portio.h"
+#include "sv.h"
 
 #define FAILURE(line_num, line, str)                                           \
     do {                                                                       \
@@ -35,115 +35,14 @@ int symbol_contains(const SymbolTable *symtab, const StringView name)
     return 0;
 }
 
-static inline void remove_doubleq(char *str)
-{
-    size_t len = strlen(str);
-    if (len >= 2 && *str == '"' && str[len - 1] == '"') {
-        memmove(str, str + 1, len - 2);
-        str[len - 2] = '\0';
-        return;
-    }
-
-    fprintf(stderr, "not a double quoted string");
-    exit(EXIT_FAILURE);
-}
-
-static inline void remove_comment(char *str)
-{
-    str[strcspn(str, ";")] = '\0';
-}
-
-static void trim_left(char **str)
-{
-    while (isspace(**str))
-        (*str)++;
-}
-
-static void trim_right(char **str)
-{
-    size_t len = strlen(*str);
-
-    while (len > 0 && isspace((*str)[len - 1]))
-        (*str)[--len] = '\0';
-}
-
-static void _trim(char **str)
-{
-    trim_left(str);
-    trim_right(str);
-}
-
-#define trim(str) _trim(&str)
-
 static inline void print_usage()
 {
     fprintf(stderr, "usage: ./sapler [file]\n");
 }
 
-char *get_str_until(const char *str, int delim, size_t *out_size)
+AddressingFlags check_instr_addr_mode(const StringView mnemonic)
 {
-    const char *p = strchr(str, delim);
-
-    if (!p) {
-        if (out_size != NULL)
-            *out_size = 0;
-        return NULL;
-    }
-
-    size_t size = (size_t)(p - str);
-
-    char *segment = malloc(size + 1);
-
-    if (!segment) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
-    }
-
-    strncpy(segment, str, size);
-    segment[size] = '\0';
-
-    if (out_size != NULL)
-        *out_size = size;
-
-    return segment;
-}
-
-char *get_str_until_func(const char *str, int (*comp)(int), size_t *out_size)
-{
-    const char *p = str;
-
-    while (*p && !comp(*p))
-        ++p;
-
-    if (!p) {
-        if (out_size != NULL)
-            *out_size = 0;
-        return NULL;
-    }
-
-    size_t size = (size_t)(p - str);
-
-    char *segment = malloc(size + 1);
-
-    if (!segment) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
-    }
-
-    strncpy(segment, str, size);
-    segment[size] = '\0';
-
-    if (out_size != NULL)
-        *out_size = size;
-
-    return segment;
-}
-
-#define get_next_field(str, out_size) get_str_until_func(str, isspace, out_size)
-
-AddressingFlags check_instr_addr_mode(const char *cursor, const char *mnemonic)
-{
-    switch (*cursor) {
+    switch (mnemonic.data[0]) {
     case '\0':
         return 0;
         break;
@@ -151,7 +50,7 @@ AddressingFlags check_instr_addr_mode(const char *cursor, const char *mnemonic)
         return MODE_IDIR;
         break;
     case '#':
-        if (!strcmp(mnemonic, "LDS"))
+        if (sv_eq_cstr_ignore_case(mnemonic, "LDS"))
             return MODE_IMM16;
         else
             return MODE_IMM;
@@ -180,9 +79,9 @@ static const char *get_addr_mode_name(AddressingFlags addr)
 
 typedef enum { OK = 0, ERRBASE, ERRVAL } parse_err;
 
-parse_err parse_number(char *operand, size_t operand_size, long *val)
+parse_err parse_number(StringView *operand, long *val)
 {
-    char l = operand[operand_size - 1];
+    char l = operand->data[operand->count - 1];
 
     int base;
     if (isdigit(l)) {
@@ -195,17 +94,22 @@ parse_err parse_number(char *operand, size_t operand_size, long *val)
         } else {
             return ERRBASE;
         }
-        operand[operand_size - 1] = '\0';
+        sv_chop_right(operand, 1);
     }
+
+    char *cstr = sv_to_cstr(operand);
 
     char *end;
     errno = 0;
-    *val = strtol(operand, &end, base);
+    *val = strtol(cstr, &end, base);
 
-    if (end == operand || *end != '\0' || errno == ERANGE || *val < 0 ||
-        *val > UINT16_MAX)
+    if (end == cstr || *end != '\0' || errno == ERANGE || *val < 0 ||
+        *val > UINT16_MAX) {
+        free(cstr);
         return ERRVAL;
+    }
 
+    free(cstr);
     return OK;
 }
 
@@ -253,34 +157,41 @@ int main(int argc, char **argv)
     size_t line_num = 0;
     while (file.count > 0) {
         line_num++;
-        StringView line = sv_chop_by_delim(&file, '\n');
-        sv_remove_comment(&line);
-        sv_trim_left(&line);
+        StringView raw_line = sv_chop_by_delim(&file, '\n');
+        StringView line = raw_line;
 
-        printf("processing line %zu: " SV_FMT, line_num, SV_ARGS(line));
+        sv_remove_comment(&line);
+        sv_trim(&line);
+
+        printf("processing line %zu: " SV_FMT "\n", line_num, SV_ARGS(line));
         if (line.count == 0)
             continue;
 
-        StringView symbol = sv_chop_by_delim(&line, ';');
+        size_t line_count = line.count;
+        StringView symbol = sv_chop_by_delim(&line, ':');
 
-        if (symbol.count == 0) {
-            FAILURE(line_num, line, "label must have a identifier");
+        if (symbol.count == line_count) { // theres no label
+            line = symbol;
+        } else {
+            if (symbol.count == 0) {
+                FAILURE(line_num, raw_line, "label must have a identifier");
+            }
+
+            if (LOCCTR > UINT16_MAX) {
+                FAILURE(line_num, raw_line, "label exceeds address space");
+            }
+
+            if (symbol_contains(&SYMTAB, symbol)) {
+                FAILURE(line_num, raw_line, "duplicate label");
+            }
+
+            if (!is_valid(symbol)) {
+                FAILURE(line_num, raw_line, "invalid label name");
+            }
+
+            Symbol label = {.name = symbol, .addr = LOCCTR};
+            da_append(SYMTAB, label);
         }
-
-        if (LOCCTR > UINT16_MAX) {
-            FAILURE(line_num, line, "label exceeds address space");
-        }
-
-        if (symbol_contains(&SYMTAB, symbol)) {
-            FAILURE(line_num, line, "duplicate label");
-        }
-
-        if (is_valid(symbol)) {
-            FAILURE(line_num, line, "invalid label name");
-        }
-
-        Symbol label = {.name = symbol, .addr = LOCCTR};
-        da_append(SYMTAB, label);
 
         sv_trim_left(&line);
         if (line.count == 0)
@@ -288,26 +199,22 @@ int main(int argc, char **argv)
 
         // read next token (mnemonic or directive)
         StringView tag = sv_chop_by_type(&line, isspace);
-        sv_trim_left(&line);
 
-        AddressingFlags mode = check_instr_addr_mode(cursor, tag);
+        AddressingFlags mode = check_instr_addr_mode(tag);
 
         if (sv_eq_cstr_ignore_case(tag, "ORG")) {
-            size_t operand_size;
-            char *operand = get_next_field(cursor, &operand_size);
+            StringView operand = sv_chop_by_type(&line, isspace);
 
-            if (operand == NULL || operand_size == 0) {
+            if (operand.count == 0)
                 FAILURE(line_num, line, "Missing operand");
-            }
-            cursor += operand_size;
 
-            if (*cursor != '\0') {
+            sv_trim_left(&line);
+
+            if (line.count != 0)
                 FAILURE(line_num, line, "Unknown field");
-            }
 
             long val;
-
-            switch (parse_number(operand, operand_size, &val)) {
+            switch (parse_number(&operand, &val)) {
             case ERRVAL:
                 FAILURE(line_num, line, "invalid value");
             case ERRBASE:
@@ -318,20 +225,17 @@ int main(int argc, char **argv)
             }
 
             LOCCTR = val;
-            free(operand);
-            free(tag);
             continue;
         }
 
-        if (!strcasecmp(tag, "DS")) { // define storage
-            size_t imed_size;
-            char *imed = get_next_field(cursor, &imed_size);
+        if (sv_eq_cstr_ignore_case(tag, "DS")) { // define storage
+            StringView imed = sv_chop_by_type(&line, isspace);
 
-            if (imed == NULL || imed_size == 0)
+            if (imed.count == 0)
                 FAILURE(line_num, line, "expected value");
 
             long imed_val;
-            switch (parse_number(imed, imed_size, &imed_val)) {
+            switch (parse_number(&imed, &imed_val)) {
             case ERRVAL:
                 FAILURE(line_num, line, "invalid value");
             case ERRBASE:
@@ -347,22 +251,20 @@ int main(int argc, char **argv)
 
             LOCCTR += imed_val;
             continue;
-        } else if (!strcasecmp(tag, "DB")) { // define byte
-            size_t count = 0;
-            char *next = NULL;
-            size_t next_size;
+        } else if (sv_eq_cstr_ignore_case(tag, "DB")) { // define byte
+            size_t count = 1;
+            StringView next = sv_chop_by_type(&line, isspace);
+
+            if (next.count == 0)
+                FAILURE(line_num, line, "expected value, but got none");
 
             for (;;) {
-                next = get_next_field(cursor, &next_size);
-                if (next == NULL || next_size == 0)
-                    FAILURE(line_num, line, "expected value, but got none");
-
-                if (!next || next_size == 0)
+                next = sv_chop_by_type(&line, isspace);
+                if (next.count == 0)
                     break;
-                cursor += next_size;
-                trim_left(&cursor);
 
-                free(next);
+                sv_trim_left(&line);
+
                 ++count;
             }
 
@@ -372,21 +274,21 @@ int main(int argc, char **argv)
 
             LOCCTR += count;
             continue;
-        } else if (!strcasecmp(tag, "DW")) { // define word
-            size_t count = 0;
-            char *next = NULL;
-            size_t next_size;
+        } else if (sv_eq_cstr_ignore_case(tag, "DW")) { // define word
+            size_t count = 1;
+            StringView next = sv_chop_by_type(&line, isspace);
+
+            if (next.count == 0)
+                FAILURE(line_num, line, "expected value, but got none");
 
             for (;;) {
-                next = get_next_field(cursor, &next_size);
-                printf("next: %p\n", next);
+                next = sv_chop_by_type(&line, isspace);
 
-                if (!next || next_size == 0)
+                if (next.count == 0)
                     break;
-                cursor += next_size;
-                trim_left(&cursor);
 
-                free(next);
+                sv_trim_left(&line);
+
                 ++count;
             }
 
@@ -396,21 +298,17 @@ int main(int argc, char **argv)
 
             LOCCTR += 2 * count;
             continue;
-        } else if (!strcasecmp(tag, "STR")) { // define string
-            size_t str_len;
-            char *str = get_next_field(cursor, &str_len);
-            remove_doubleq(str);
-            str_len = strlen(str);
+        } else if (sv_eq_cstr_ignore_case(tag, "STR")) { // define string
+            StringView str = sv_chop_by_type(&line, isspace);
+            sv_remove_doubleq(&str);
 
-            printf("string defined: %s | len: %zu\n", str, str_len);
+            printf("removed double quoted string: " SV_FMT "\n", SV_ARGS(str));
 
-            free(str);
-
-            if (LOCCTR + str_len > UINT16_MAX + 1) {
+            if (LOCCTR + str.count > UINT16_MAX + 1) {
                 FAILURE(line_num, line, "directive exceeds address space");
             }
 
-            LOCCTR += str_len;
+            LOCCTR += str.count;
             continue;
         }
 
@@ -418,7 +316,7 @@ int main(int argc, char **argv)
         for (i = 0; i < SAPIENS_INSTRUCTION_COUNT; ++i) {
             const Instruction n = SAPIENS_INSTRUCTIONS[i];
 
-            if (!strcmp(tag, n.mnemonic)) {
+            if (!sv_eq_cstr_ignore_case(tag, n.mnemonic)) {
                 uint8_t is_valid;
 
                 // NOP has supported_modes == 0, we have to check that case
@@ -446,54 +344,41 @@ int main(int argc, char **argv)
         if (i == SAPIENS_INSTRUCTION_COUNT) {
             FAILURE(line_num, line, "Unknown instruction");
         }
-
-        memset(line, 0, sizeof(line));
-        free(tag);
     }
 
     for (size_t i = 0; i < SYMTAB.count; ++i)
-        printf("%s @ %d\n", SYMTAB.arr[i].name, SYMTAB.arr[i].addr);
+        printf(SV_FMT " @ %d\n", SV_ARGS(SYMTAB.items[i].name),
+               SYMTAB.items[i].addr);
 
     // pass 2
     puts("starting pass 2 phase");
-    rewind(fp);
+
+    file = sv(file_buffer);
     LOCCTR = 0;
     line_num = 0;
-    while (fgets(line, sizeof(line), fp)) {
+    while (file.count > 0) {
         line_num++;
-        printf("processing line %zu: %s", line_num, line);
+        StringView line = sv_chop_by_delim(&file, '\n');
+        sv_remove_comment(&line);
+        sv_trim(&line);
 
-        char *cursor = line;
-        remove_comment(cursor);
-        trim(cursor);
-        if (*cursor == '\0')
+        printf("processing line %zu: " SV_FMT "\n", line_num, SV_ARGS(line));
+        if (line.count == 0)
             continue;
 
-        char *cl = strchr(cursor, ':');
+        StringView symbol = sv_chop_by_delim(&line, ':');
 
-        if (cl != NULL) {
-            cursor = cl + 1;
-            trim_left(&cursor);
-        }
-
-        if (*cursor == '\0')
+        if (line.count == 0)
             continue; // label only line
 
         // read next token (mnemonic or directive)
-        size_t tag_size;
-        char *tag = get_str_until_func(cursor, isspace, &tag_size);
-        cursor += tag_size;
-        trim_left(&cursor);
+        StringView tag = sv_chop_by_type(&line, isspace);
 
-        AddressingFlags mode = check_instr_addr_mode(cursor, tag);
-
-        printf("instruction: %s \n", tag);
+        AddressingFlags mode = check_instr_addr_mode(tag);
     }
 
-    for (size_t i = 0; i < SYMTAB.count; ++i)
-        free(SYMTAB.arr[i].name);
-
-    free(SYMTAB.arr);
+    free(file_buffer);
+    free(SYMTAB.items);
     fclose(fp);
     return 0;
 }

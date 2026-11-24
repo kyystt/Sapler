@@ -23,5 +23,4 @@ ORG 100h
 DONE: HLT               ; 19: 1 byte
 END:                    ; 20: label only, no bytes
 
-START: NOP
 START: HLT       ; should report duplicate label

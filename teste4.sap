@@ -1,9 +1,9 @@
-; DS 100
+X: DS 100
 
-; DB 1, 2, 3
+Y: DB 1, 2, 3
 
-; DW 1, 2, 3
+Z: DW 1, 2, 3
 
 STR "oie"
 
-; label1: NOP
+label1: NOP
