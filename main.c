@@ -36,18 +36,35 @@ int symbol_contains(const SymbolTable *symtab, const StringView name)
     return 0;
 }
 
+const Symbol *symbol_find(const SymbolTable *symtab, const StringView name)
+{
+    for (size_t i = 0; i < symtab->count; ++i) {
+        if (sv_eq_ignore_case(symtab->items[i].name, name)) {
+            return &symtab->items[i];
+        }
+    }
+
+    return 0;
+}
+
 static inline void print_usage(void)
 {
     fprintf(stderr, "usage: ./sapler [file]\n");
 }
 
-// TODO: check if it has operand and it is valid
 AddressingFlags check_instr_addr_mode(const StringView instruction,
                                       const StringView operand)
 {
     if (sv_eq_cstr_ignore_case(instruction, "NOP") ||
-        sv_eq_cstr_ignore_case(instruction, "HLT"))
-        return 0;
+        sv_eq_cstr_ignore_case(instruction, "HLT")) {
+        if (operand.count != 0)
+            return ERR_INVALID;
+
+        return MODE_NO_OPERAND;
+    }
+
+    if (operand.count == 0)
+        return ERR_NO_OPERAND;
 
     switch (operand.data[0]) {
     case '@':
@@ -116,10 +133,10 @@ parse_err parse_number(StringView *operand, long *val)
     return OK;
 }
 
-// TODO: check if it really validates the label
 int is_valid(StringView symbol)
 {
-    if (isdigit(symbol.data[0]))
+    if (symbol.count == 0 ||
+        (!isalpha(symbol.data[0]) && symbol.data[0] != '_'))
         return 0;
 
     for (size_t i = 1; i < symbol.count; ++i) {
@@ -209,12 +226,11 @@ int main(int argc, char **argv)
             da_append(SYMTAB, label);
         }
 
-        sv_trim_left(&line);
         if (line.count == 0)
             continue;
 
         // read next token (mnemonic or directive)
-        StringView tag = sv_chop_by_type(&line, isspace);
+        StringView tag = sv_next_token(&line);
 
         if (sv_eq_cstr_ignore_case(tag, "ORG")) {
             StringView imed = sv_chop_by_type(&line, isspace);
@@ -348,12 +364,19 @@ int main(int argc, char **argv)
                 StringView operand = sv_chop_by_type(&line, isspace);
                 AddressingFlags mode = check_instr_addr_mode(tag, operand);
 
+                if (mode == ERR_NO_OPERAND)
+                    FAILURE(line_num, raw_line, "expected operando found none");
+
+                if (mode == ERR_INVALID)
+                    FAILURE(line_num, raw_line, "invalid operand");
+
                 printf("Operand: " SV_FMT "\n", SV_ARGS(operand));
                 printf("mode found for %s: %s\n", n.mnemonic,
                        get_addr_mode_name(mode));
 
-                // NOP has supported_modes == 0, we have to check that case
-                if (mode == 0) {
+                // NOP and HLT has supported_modes == 0, we have to check that
+                // case
+                if (mode == MODE_NO_OPERAND) {
                     is_valid = n.supported_modes == 0;
                 } else {
                     is_valid = (n.supported_modes & mode) != 0;
@@ -412,6 +435,12 @@ int main(int argc, char **argv)
         StringView tag = sv_chop_by_type(&line, isspace);
         StringView operand = sv_chop_by_type(&line, isspace);
         AddressingFlags mode = check_instr_addr_mode(tag, operand);
+
+        if (mode == ERR_NO_OPERAND)
+            FAILURE(line_num, raw_line, "expected operand found none");
+
+        if (mode == ERR_INVALID)
+            FAILURE(line_num, raw_line, "invalid operand");
     }
 
     free(file_buffer);
