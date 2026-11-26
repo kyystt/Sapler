@@ -1,15 +1,16 @@
-#include <ctype.h>
 #include <errno.h>
+#include <stdint.h>
 
 #include "dynamic.h"
 #include "isa.h"
 #include "portio.h"
 #include "sv.h"
 
-#define FAILURE(line_num, line, str)                                           \
+#define FAILURE(line_num, line, ...)                                           \
     do {                                                                       \
-        fprintf(stderr, "line %zu: " str " -> " SV_FMT "\n", line_num,         \
-                SV_ARGS(line));                                                \
+        fprintf(stderr, "line %zu: ", line_num);                               \
+        fprintf(stderr, __VA_ARGS__);                                          \
+        fprintf(stderr, " -> " SV_FMT "\n", SV_ARGS(line));                    \
         exit(EXIT_FAILURE);                                                    \
     } while (0)
 
@@ -35,22 +36,25 @@ int symbol_contains(const SymbolTable *symtab, const StringView name)
     return 0;
 }
 
-static inline void print_usage()
+static inline void print_usage(void)
 {
     fprintf(stderr, "usage: ./sapler [file]\n");
 }
 
-AddressingFlags check_instr_addr_mode(const StringView mnemonic)
+// TODO: check if it has operand and it is valid
+AddressingFlags check_instr_addr_mode(const StringView instruction,
+                                      const StringView operand)
 {
-    switch (mnemonic.data[0]) {
-    case '\0':
+    if (sv_eq_cstr_ignore_case(instruction, "NOP") ||
+        sv_eq_cstr_ignore_case(instruction, "HLT"))
         return 0;
-        break;
+
+    switch (operand.data[0]) {
     case '@':
         return MODE_IDIR;
         break;
     case '#':
-        if (sv_eq_cstr_ignore_case(mnemonic, "LDS"))
+        if (sv_eq_cstr_ignore_case(instruction, "LDS"))
             return MODE_IMM16;
         else
             return MODE_IMM;
@@ -103,8 +107,7 @@ parse_err parse_number(StringView *operand, long *val)
     errno = 0;
     *val = strtol(cstr, &end, base);
 
-    if (end == cstr || *end != '\0' || errno == ERANGE || *val < 0 ||
-        *val > UINT16_MAX) {
+    if (end == cstr || *end != '\0' || errno == ERANGE) {
         free(cstr);
         return ERRVAL;
     }
@@ -113,6 +116,7 @@ parse_err parse_number(StringView *operand, long *val)
     return OK;
 }
 
+// TODO: check if it really validates the label
 int is_valid(StringView symbol)
 {
     if (isdigit(symbol.data[0]))
@@ -124,6 +128,17 @@ int is_valid(StringView symbol)
         if (!isalnum(c) && c != '_')
             return 0;
     }
+
+    return 1;
+}
+
+int has_label(StringView line)
+{
+    StringView first_keyword = sv_chop_by_type(&line, isspace);
+    size_t keyword_count = first_keyword.count;
+
+    if (sv_chop_by_delim(&first_keyword, ':').count == keyword_count)
+        return 0;
 
     return 1;
 }
@@ -167,12 +182,13 @@ int main(int argc, char **argv)
         if (line.count == 0)
             continue;
 
-        size_t line_count = line.count;
-        StringView symbol = sv_chop_by_delim(&line, ':');
+        StringView symbol = {0};
 
-        if (symbol.count == line_count) { // theres no label
-            line = symbol;
-        } else {
+        if (has_label(line)) {
+            symbol = sv_chop_by_delim(&line, ':');
+
+            printf("SYMBOL FOUND: " SV_FMT "\n", SV_ARGS(symbol));
+
             if (symbol.count == 0) {
                 FAILURE(line_num, raw_line, "label must have a identifier");
             }
@@ -200,28 +216,28 @@ int main(int argc, char **argv)
         // read next token (mnemonic or directive)
         StringView tag = sv_chop_by_type(&line, isspace);
 
-        AddressingFlags mode = check_instr_addr_mode(tag);
-
         if (sv_eq_cstr_ignore_case(tag, "ORG")) {
-            StringView operand = sv_chop_by_type(&line, isspace);
+            StringView imed = sv_chop_by_type(&line, isspace);
 
-            if (operand.count == 0)
-                FAILURE(line_num, line, "Missing operand");
+            if (imed.count == 0)
+                FAILURE(line_num, raw_line, "Missing operand");
 
             sv_trim_left(&line);
 
             if (line.count != 0)
-                FAILURE(line_num, line, "Unknown field");
+                FAILURE(line_num, raw_line, "Unknown field");
 
             long val;
-            switch (parse_number(&operand, &val)) {
-            case ERRVAL:
-                FAILURE(line_num, line, "invalid value");
-            case ERRBASE:
-                FAILURE(line_num, line, "invalid base");
-            case OK:
-            default:
-                break;
+            parse_err rc = parse_number(&imed, &val);
+            if (rc == ERRVAL) {
+                if (val < 0 || val > UINT16_MAX) {
+                    FAILURE(line_num, raw_line, "value must be >= 0 and <= %d",
+                            INT16_MAX);
+                } else {
+                    FAILURE(line_num, raw_line, "invalid value");
+                }
+            } else if (rc == ERRBASE) {
+                FAILURE(line_num, raw_line, "invalid base");
             }
 
             LOCCTR = val;
@@ -232,31 +248,33 @@ int main(int argc, char **argv)
             StringView imed = sv_chop_by_type(&line, isspace);
 
             if (imed.count == 0)
-                FAILURE(line_num, line, "expected value");
+                FAILURE(line_num, raw_line, "expected value");
 
-            long imed_val;
-            switch (parse_number(&imed, &imed_val)) {
-            case ERRVAL:
-                FAILURE(line_num, line, "invalid value");
-            case ERRBASE:
-                FAILURE(line_num, line, "invalid base");
-            case OK:
-            default:
-                break;
+            long val;
+            parse_err rc = parse_number(&imed, &val);
+            if (rc == ERRVAL) {
+                if (val < 0 || val > UINT16_MAX) {
+                    FAILURE(line_num, raw_line, "value must be >= 0 and <= %d",
+                            INT16_MAX);
+                } else {
+                    FAILURE(line_num, raw_line, "invalid value");
+                }
+            } else if (rc == ERRBASE) {
+                FAILURE(line_num, raw_line, "invalid base");
             }
 
-            if (LOCCTR + imed_val > UINT16_MAX + 1) {
-                FAILURE(line_num, line, "directive exceeds address space");
+            if (LOCCTR + val > UINT16_MAX + 1) {
+                FAILURE(line_num, raw_line, "directive exceeds address space");
             }
 
-            LOCCTR += imed_val;
+            LOCCTR += val;
             continue;
         } else if (sv_eq_cstr_ignore_case(tag, "DB")) { // define byte
             size_t count = 1;
             StringView next = sv_chop_by_type(&line, isspace);
 
             if (next.count == 0)
-                FAILURE(line_num, line, "expected value, but got none");
+                FAILURE(line_num, raw_line, "expected value, but got none");
 
             for (;;) {
                 next = sv_chop_by_type(&line, isspace);
@@ -269,7 +287,7 @@ int main(int argc, char **argv)
             }
 
             if (LOCCTR + count > UINT16_MAX + 1) {
-                FAILURE(line_num, line, "directive exceeds address space");
+                FAILURE(line_num, raw_line, "directive exceeds address space");
             }
 
             LOCCTR += count;
@@ -279,7 +297,7 @@ int main(int argc, char **argv)
             StringView next = sv_chop_by_type(&line, isspace);
 
             if (next.count == 0)
-                FAILURE(line_num, line, "expected value, but got none");
+                FAILURE(line_num, raw_line, "expected value, but got none");
 
             for (;;) {
                 next = sv_chop_by_type(&line, isspace);
@@ -293,19 +311,26 @@ int main(int argc, char **argv)
             }
 
             if (LOCCTR + 2 * count > UINT16_MAX + 1) {
-                FAILURE(line_num, line, "directive exceeds address space");
+                FAILURE(line_num, raw_line, "directive exceeds address space");
             }
 
             LOCCTR += 2 * count;
             continue;
         } else if (sv_eq_cstr_ignore_case(tag, "STR")) { // define string
-            StringView str = sv_chop_by_type(&line, isspace);
+            StringView str = {0};
+            int rc = sv_get_str_literal_doubleq(line, &str);
+
+            if (rc != 1) {
+                FAILURE(line_num, raw_line, "expected string literal");
+            }
+
             sv_remove_doubleq(&str);
 
-            printf("removed double quoted string: " SV_FMT "\n", SV_ARGS(str));
+            printf("line: " SV_FMT "\n", SV_ARGS(line));
+            printf("string found: " SV_FMT "\n", SV_ARGS(str));
 
             if (LOCCTR + str.count > UINT16_MAX + 1) {
-                FAILURE(line_num, line, "directive exceeds address space");
+                FAILURE(line_num, raw_line, "directive exceeds address space");
             }
 
             LOCCTR += str.count;
@@ -316,8 +341,16 @@ int main(int argc, char **argv)
         for (i = 0; i < SAPIENS_INSTRUCTION_COUNT; ++i) {
             const Instruction n = SAPIENS_INSTRUCTIONS[i];
 
-            if (!sv_eq_cstr_ignore_case(tag, n.mnemonic)) {
+            if (sv_eq_cstr_ignore_case(tag, n.mnemonic)) {
+                printf("mnemonic found: %s\n", n.mnemonic);
                 uint8_t is_valid;
+
+                StringView operand = sv_chop_by_type(&line, isspace);
+                AddressingFlags mode = check_instr_addr_mode(tag, operand);
+
+                printf("Operand: " SV_FMT "\n", SV_ARGS(operand));
+                printf("mode found for %s: %s\n", n.mnemonic,
+                       get_addr_mode_name(mode));
 
                 // NOP has supported_modes == 0, we have to check that case
                 if (mode == 0) {
@@ -325,24 +358,25 @@ int main(int argc, char **argv)
                 } else {
                     is_valid = (n.supported_modes & mode) != 0;
                 }
+
                 if (is_valid) {
                     size_t instr_size = get_instr_size(&n, mode);
 
                     if (LOCCTR + instr_size > UINT16_MAX + 1) {
-                        FAILURE(line_num, line,
+                        FAILURE(line_num, raw_line,
                                 "instruction exceeds address space");
                     }
 
                     LOCCTR += instr_size;
                 } else {
-                    FAILURE(line_num, line, "Incorrect addressing mode");
+                    FAILURE(line_num, raw_line, "Incorrect addressing mode");
                 }
                 break;
             }
         }
 
         if (i == SAPIENS_INSTRUCTION_COUNT) {
-            FAILURE(line_num, line, "Unknown instruction");
+            FAILURE(line_num, raw_line, "Unknown instruction");
         }
     }
 
@@ -358,7 +392,8 @@ int main(int argc, char **argv)
     line_num = 0;
     while (file.count > 0) {
         line_num++;
-        StringView line = sv_chop_by_delim(&file, '\n');
+        StringView raw_line = sv_chop_by_delim(&file, '\n');
+        StringView line = raw_line;
         sv_remove_comment(&line);
         sv_trim(&line);
 
@@ -366,15 +401,17 @@ int main(int argc, char **argv)
         if (line.count == 0)
             continue;
 
-        StringView symbol = sv_chop_by_delim(&line, ':');
+        if (has_label(line))
+            (void)sv_chop_by_delim(&line, '"');
 
+        sv_trim_left(&line);
         if (line.count == 0)
             continue; // label only line
 
         // read next token (mnemonic or directive)
         StringView tag = sv_chop_by_type(&line, isspace);
-
-        AddressingFlags mode = check_instr_addr_mode(tag);
+        StringView operand = sv_chop_by_type(&line, isspace);
+        AddressingFlags mode = check_instr_addr_mode(tag, operand);
     }
 
     free(file_buffer);

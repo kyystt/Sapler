@@ -4,6 +4,8 @@ Y: DB 1, 2, 3
 
 Z: DW 1, 2, 3
 
-STR "oie"
+STR "hello world"
+
+STR "hora: minuto"
 
 label1: NOP
