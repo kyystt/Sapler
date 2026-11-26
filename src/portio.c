@@ -1,6 +1,6 @@
 #include "../include/portio.h"
 
-char* read_entire_file(const char *path, size_t *out_size)
+char *read_entire_file(const char *path, size_t *out_size)
 {
     FILE *fp = fopen(path, "rb");
 
@@ -17,7 +17,7 @@ char* read_entire_file(const char *path, size_t *out_size)
     }
 
     file_offset_t size = portable_ftell(fp);
-    if (size < 0 || (uint64_t) size > SIZE_MAX - 1) {
+    if (size < 0 || (uint64_t)size > SIZE_MAX - 1) {
         perror("ftell");
         fclose(fp);
         exit(EXIT_FAILURE);
@@ -29,7 +29,7 @@ char* read_entire_file(const char *path, size_t *out_size)
         exit(EXIT_FAILURE);
     }
 
-    char *buffer = (char *) malloc(size + 1);
+    char *buffer = (char *)malloc(size + 1);
 
     if (!buffer) {
         perror("malloc");
@@ -38,7 +38,7 @@ char* read_entire_file(const char *path, size_t *out_size)
     }
 
     size_t bytes_read = fread(buffer, 1, size, fp);
-    if (bytes_read != size) {
+    if (bytes_read != (size_t)size) {
         perror("fread");
         free(buffer);
         fclose(fp);
@@ -49,7 +49,8 @@ char* read_entire_file(const char *path, size_t *out_size)
 
     buffer[size] = '\0';
 
-    if (out_size) *out_size = size;
+    if (out_size)
+        *out_size = size;
 
     return buffer;
 }
