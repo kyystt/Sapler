@@ -128,18 +128,42 @@ StringView sv_chop_by_type(StringView *sv, int (*istype)(int))
 
 int sv_get_str_literal_doubleq(StringView src, StringView *dst)
 {
-    size_t i = 0;
+    size_t i = 0, j;
 
     while (i < src.count && src.data[i] != '"')
         ++i;
 
-    StringView str_literal = {.data = src.data + i, .count = src.count - i};
-
-    if (str_literal.data[str_literal.count - 1] != '"')
+    if (i == src.count)
         return -1;
 
-    *dst = str_literal;
-    return 1;
+    j = i + 1;
+
+    // "Hello, \"World"
+    // ^              ^
+    // i              j
+
+    while (j < src.count) {
+        char c = src.data[j];
+
+        if (c == '\\') {
+            if (j + 1 >= src.count)
+                return -1;
+
+            j += 2; // skip escaped char
+            continue;
+        }
+
+        if (c == '"') {
+            *dst = (StringView){
+                .data = src.data + i,
+                .count = j - i + 1,
+            };
+            return 1;
+        }
+        ++j;
+    }
+
+    return -1; // no closing quote
 }
 
 void sv_remove_comment(StringView *sv)
@@ -170,4 +194,10 @@ void sv_remove_doubleq(StringView *sv)
 
     sv_chop_left(sv, 1);
     sv_chop_right(sv, 1);
+}
+
+StringView sv_next_token(StringView *sv)
+{
+    sv_trim_left(sv);
+    return sv_chop_by_type(sv, isspace);
 }
