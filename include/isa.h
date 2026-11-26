@@ -91,6 +91,9 @@ typedef enum {
 } OPCODE;
 
 typedef enum {
+    ERR_NO_OPERAND = -2,
+    ERR_INVALID = -1,
+    MODE_NO_OPERAND = 0,
     MODE_DIR = 1u << 0,
     MODE_IDIR = 1u << 1,
     MODE_IMM = 1u << 2,
