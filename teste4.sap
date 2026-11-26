@@ -8,4 +8,6 @@ STR "hello world"
 
 STR "hora: minuto"
 
+STR "hello \"world\n"
+
 label1: NOP
