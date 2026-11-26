@@ -126,6 +126,22 @@ StringView sv_chop_by_type(StringView *sv, int (*istype)(int))
     return result;
 }
 
+int sv_get_str_literal_doubleq(StringView src, StringView *dst)
+{
+    size_t i = 0;
+
+    while (i < src.count && src.data[i] != '"')
+        ++i;
+
+    StringView str_literal = {.data = src.data + i, .count = src.count - i};
+
+    if (str_literal.data[str_literal.count - 1] != '"')
+        return -1;
+
+    *dst = str_literal;
+    return 1;
+}
+
 void sv_remove_comment(StringView *sv)
 {
     int in_quote = 0;

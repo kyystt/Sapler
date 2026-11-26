@@ -30,5 +30,6 @@ StringView sv_chop_by_delim(StringView *, char);
 StringView sv_chop_by_type(StringView *, int (*)(int));
 void sv_remove_comment(StringView *);
 void sv_remove_doubleq(StringView *);
+int sv_get_str_literal_doubleq(StringView, StringView *);
 
 #endif // SV_H
